@@ -4,9 +4,9 @@
 // The token is only ever sent to api.anthropic.com.
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { OrcaWorkerApi } from 'orca/worker'
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
@@ -33,36 +33,9 @@ function run(cmd: string, args: string[]): Promise<string> {
   })
 }
 
-/**
- * Orca keeps one Claude login per "managed account", each in its own config dir. Claude Code
- * stores that login in a Keychain entry named `Claude Code-credentials-<sha256(dir)[0:8]>`.
- * Returns the Keychain service and config dir of the account Orca currently has active, or the
- * default login (`~/.claude`) when Orca has no managed account active.
- */
-async function resolveAccount(): Promise<{ service: string; configDir: string | null }> {
-  try {
-    const index = JSON.parse(await readFile(join(ORCA_DIR, 'orca-profile-index.json'), 'utf8'))
-    const profile = /^[\w-]+$/.test(index.activeProfileId) ? index.activeProfileId : 'local-default'
-    const db = join(ORCA_DIR, 'profiles', profile, 'profile-state.db')
-    const sql =
-      "select (select atom from json_tree(d.payload) where key='activeClaudeManagedAccountId') as active, " +
-      "(select j1.atom from json_tree(d.payload) j1, json_tree(d.payload) j2 " +
-      "where j1.key='managedAuthPath' and j2.key='id' and j2.parent=j1.parent " +
-      "and j2.atom=(select atom from json_tree(d.payload) where key='activeClaudeManagedAccountId')) as path " +
-      "from profile_state_documents d where d.domain='settings'"
-    const rows = JSON.parse((await run('sqlite3', ['-readonly', '-json', db, sql])) || '[]')
-    const dir: unknown = rows[0]?.path
-    if (typeof dir === 'string' && dir) {
-      const hash = createHash('sha256').update(dir).digest('hex').slice(0, 8)
-      return { service: `${DEFAULT_SERVICE}-${hash}`, configDir: dir }
-    }
-  } catch {
-    // Fall through to the default login.
-  }
-  return { service: DEFAULT_SERVICE, configDir: null }
-}
+type Account = { key: string; service: string; configDir: string | null; label: string; active: boolean }
 
-async function accountLabel(configDir: string | null): Promise<string> {
+async function labelFor(configDir: string | null): Promise<string> {
   try {
     const file = join(configDir ?? homedir(), '.claude.json')
     const email = JSON.parse(await readFile(file, 'utf8')).oauthAccount?.emailAddress
@@ -71,6 +44,72 @@ async function accountLabel(configDir: string | null): Promise<string> {
     // No label available.
   }
   return configDir ? `profile ${configDir.split('/').slice(-2, -1)[0].slice(0, 8)}` : 'default login'
+}
+
+/**
+ * Orca keeps one Claude login per "managed account", each in its own config dir. Claude Code
+ * stores that login in a Keychain entry named `Claude Code-credentials-<sha256(dir)[0:8]>`.
+ * Returns every managed account plus the default login (`~/.claude`), marking the one Orca has
+ * active (the default login when Orca has no managed account active).
+ */
+async function listAccounts(): Promise<Account[]> {
+  const managed: { id: string; path: string; active: string | null }[] = []
+  try {
+    const index = JSON.parse(await readFile(join(ORCA_DIR, 'orca-profile-index.json'), 'utf8'))
+    const profile = /^[\w-]+$/.test(index.activeProfileId) ? index.activeProfileId : 'local-default'
+    const db = join(ORCA_DIR, 'profiles', profile, 'profile-state.db')
+    const sql =
+      "select j2.atom as id, j1.atom as path, " +
+      "(select atom from json_tree(d.payload) where key='activeClaudeManagedAccountId') as active " +
+      "from profile_state_documents d, json_tree(d.payload) j1, json_tree(d.payload) j2 " +
+      "where d.domain='settings' and j1.key='managedAuthPath' and j2.key='id' and j2.parent=j1.parent"
+    const rows = JSON.parse((await run('sqlite3', ['-readonly', '-json', db, sql])) || '[]')
+    for (const r of rows) {
+      if (typeof r.id === 'string' && typeof r.path === 'string') managed.push(r)
+    }
+  } catch {
+    // Orca's state is unreadable: only the default login is offered.
+  }
+  managed.sort((x, y) => x.path.localeCompare(y.path))
+  const activeId = managed[0]?.active ?? null
+  const accounts: Account[] = await Promise.all(
+    managed.map(async (m) => ({
+      key: m.id,
+      service: `${DEFAULT_SERVICE}-${createHash('sha256').update(m.path).digest('hex').slice(0, 8)}`,
+      configDir: m.path,
+      label: await labelFor(m.path),
+      active: m.id === activeId
+    }))
+  )
+  accounts.push({
+    key: 'default',
+    service: DEFAULT_SERVICE,
+    configDir: null,
+    label: await labelFor(null),
+    active: !accounts.some((x) => x.active)
+  })
+  return accounts
+}
+
+// Which account the bars show: null follows whichever one Orca has active.
+const PREFS_FILE = join(homedir(), '.config', 'claude-usage-bars.json')
+
+async function loadPinned(): Promise<string | null> {
+  try {
+    const pinned = JSON.parse(await readFile(PREFS_FILE, 'utf8')).pinned
+    return typeof pinned === 'string' ? pinned : null
+  } catch {
+    return null
+  }
+}
+
+async function savePinned(pinned: string | null): Promise<void> {
+  try {
+    await mkdir(dirname(PREFS_FILE), { recursive: true })
+    await writeFile(PREFS_FILE, JSON.stringify({ pinned }) + '\n')
+  } catch {
+    // Not persisted; the choice still holds until the worker restarts.
+  }
 }
 
 async function readToken(service: string): Promise<string> {
@@ -181,11 +220,36 @@ export default function activate(orca: OrcaWorkerApi): void {
     })
   }
 
+  let pinned: string | null = null
+
+  async function currentAccount(): Promise<{ all: Account[]; current: Account }> {
+    const all = await listAccounts()
+    const current =
+      all.find((a) => a.key === pinned) ?? all.find((a) => a.active) ?? all[all.length - 1]
+    return { all, current }
+  }
+
+  async function showAccount(all: Account[], current: Account) {
+    const follows = pinned === null || !all.some((a) => a.key === pinned)
+    const lines = all.map((a) => `${a === current ? '▶' : '·'} ${a.label}${a.active ? ' (active in Orca)' : ''}`)
+    return show('account', {
+      text: `${current.label}${follows ? '' : ' (pinned)'}`,
+      tooltip: [
+        ...lines,
+        follows ? 'Following Orca' : 'Pinned: ignoring Orca’s active account',
+        'Click to switch the account shown (view only, Orca’s own account is unchanged)'
+      ]
+        .join(' | ')
+        .slice(0, 256),
+      visible: true
+    })
+  }
+
   async function refresh(): Promise<number> {
     try {
-      const account = await resolveAccount()
-      const who = await accountLabel(account.configDir)
-      const usage = await fetchUsage(await readToken(account.service))
+      const { all, current } = await currentAccount()
+      await showAccount(all, current)
+      const usage = await fetchUsage(await readToken(current.service))
       const opus = pct(usage.seven_day_opus)
       const sonnet = pct(usage.seven_day_sonnet)
       const weekly = [
@@ -194,8 +258,8 @@ export default function activate(orca: OrcaWorkerApi): void {
       ]
       failures = 0
       await Promise.all([
-        showWindow('five', '5h', usage.five_hour, [`Account: ${who}`]),
-        showWindow('seven', '7d', usage.seven_day, [`Account: ${who}`, ...weekly])
+        showWindow('five', '5h', usage.five_hour, [`Account: ${current.label}`]),
+        showWindow('seven', '7d', usage.seven_day, [`Account: ${current.label}`, ...weekly])
       ])
       return POLL_MS
     } catch (e) {
@@ -215,13 +279,28 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!stopped) timer = setTimeout(loop, next)
   }
 
+  /** Cycles: follow Orca → each account in turn → back to following Orca. */
+  orca.commands.register('usage.switch', async () => {
+    const { all } = await currentAccount()
+    const order: (string | null)[] = [null, ...all.map((a) => a.key)]
+    const at = order.indexOf(pinned)
+    pinned = order[(at + 1) % order.length]
+    await savePinned(pinned)
+    if (timer) clearTimeout(timer)
+    await loop()
+    return pinned === null ? 'Following Orca’s active account' : `Showing ${all.find((a) => a.key === pinned)?.label}`
+  })
+
   orca.commands.register('usage.refresh', async () => {
     if (timer) clearTimeout(timer)
     await loop()
     return 'Claude usage refreshed'
   })
 
-  void loop()
+  void loadPinned().then((p) => {
+    pinned = p
+    return loop()
+  })
   ;(globalThis as { __claudeUsageStop?: () => void }).__claudeUsageStop = () => {
     stopped = true
     if (timer) clearTimeout(timer)

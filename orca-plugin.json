@@ -15,9 +15,20 @@
       {
         "id": "usage.refresh",
         "title": "Claude Usage: Refresh now"
+      },
+      {
+        "id": "usage.switch",
+        "title": "Claude Usage: Switch account shown"
       }
     ],
     "statusBarItems": [
+      {
+        "id": "account",
+        "icon": "agent",
+        "text": "Claude \u2026",
+        "tooltip": "Claude account (loading)",
+        "command": "usage.switch"
+      },
       {
         "id": "five",
         "icon": "activity",

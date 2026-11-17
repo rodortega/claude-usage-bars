@@ -3,7 +3,7 @@
 An [Orca](https://orca.dev) plugin that shows your Claude 5-hour and 7-day usage as colored bars in the status bar, with a countdown to each reset.
 
 ```
-5h ▓▓▓▓▓░░░ 62% · 3h 15m     7d ▓▓▓▓░░░░ 41% · 2d 4h
+you@example.com   5h ▓▓▓▓▓░░░ 62% · 3h 15m   7d ▓▓▓▓░░░░ 41% · 2d 4h
 ```
 
 Orca's built-in usage display only shows numbers. This plugin adds a bar per window, colors it by how close you are to the limit, and puts the time until reset right next to it.
@@ -23,6 +23,7 @@ Orca's built-in usage display only shows numbers. This plugin adds a bar per win
 - **Details on hover**: percentage, time until reset with the clock time, last update time, and the weekly Opus and Sonnet numbers when your account has them.
 - **Click to refresh** either item.
 - **Polite polling**: one request every 5 minutes, backing off up to 30 minutes after a failure or a 429.
+- **Account item** showing the email in use. Click it to cycle: follow Orca → each Claude account in turn → back to following Orca. The choice is remembered in `~/.config/claude-usage-bars.json`. It only changes what the plugin shows; it cannot change Orca's own active account.
 - **Follows your active Orca account.** If you use several Claude accounts in Orca, the bars show the one that is currently active, and the tooltip names it. With no managed account active it falls back to the default `~/.claude` login.
 - A window whose reset time has already passed shows as 0%.
 
@@ -55,7 +56,7 @@ If `orca` is not on your PATH, use the binary inside the app:
 /Applications/Orca.app/Contents/Resources/bin/orca plugin dev load .
 ```
 
-Two items, `5h` and `7d`, then appear in the status bar. Because it is a development plugin, Orca reloads it whenever you edit the files.
+Three items (the account email, `5h` and `7d`) then appear in the status bar. Because it is a development plugin, Orca reloads it whenever you edit the files.
 
 To remove it:
 
