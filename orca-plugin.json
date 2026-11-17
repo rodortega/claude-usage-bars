@@ -1,0 +1,39 @@
+{
+  "manifestVersion": 2,
+  "id": "claude-usage-bars",
+  "name": "Claude Usage Bars",
+  "version": "0.1.0",
+  "description": "Shows Claude 5h and 7d usage as bars in the status bar, with reset times on hover.",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "commands": [
+      {
+        "id": "usage.refresh",
+        "title": "Claude Usage: Refresh now"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "five",
+        "icon": "activity",
+        "text": "5h \u2026",
+        "tooltip": "Claude 5h usage (loading)",
+        "command": "usage.refresh"
+      },
+      {
+        "id": "seven",
+        "icon": "calendar",
+        "text": "7d \u2026",
+        "tooltip": "Claude 7d usage (loading)",
+        "command": "usage.refresh"
+      }
+    ]
+  },
+  "repository": "https://github.com/rodortega/claude-usage-bars",
+  "license": "MIT"
+}
