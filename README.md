@@ -23,8 +23,8 @@ Orca's built-in usage display only shows numbers. This plugin adds a bar per win
 - **Details on hover**: percentage, time until reset with the clock time, last update time, and the weekly Opus and Sonnet numbers when your account has them.
 - **Click to refresh** either item.
 - **Polite polling**: one request every 5 minutes, backing off up to 30 minutes after a failure or a 429.
-- **Account item** showing the email in use. Click it to cycle: follow Orca → each Claude account in turn → back to following Orca. The choice is remembered in `~/.config/claude-usage-bars.json`. It only changes what the plugin shows; it cannot change Orca's own active account.
-- **Follows your active Orca account.** If you use several Claude accounts in Orca, the bars show the one that is currently active, and the tooltip names it. With no managed account active it falls back to the default `~/.claude` login.
+- **Account item** showing the email Orca is using. Click it to switch Orca itself to the next Claude account (it cycles through every account, then back to the first). This runs `orca account select`, so it applies to new agent launches, exactly like picking an account in Orca; agents already running keep their account. The bars update right away.
+- **Follows your active Orca account.** If you use several Claude accounts in Orca, the bars show the one Orca currently uses. With no managed account active it falls back to the default `~/.claude` login.
 - A window whose reset time has already passed shows as 0%.
 
 ## Requirements
@@ -32,7 +32,6 @@ Orca's built-in usage display only shows numbers. This plugin adds a bar per win
 - macOS (the Claude login is read from the macOS Keychain).
 - Orca 1.4.248 or later.
 - Claude Code installed and logged in on this machine, so the `Claude Code-credentials` Keychain entry exists.
-- `sqlite3` on your PATH (it ships with macOS); the plugin uses it to read which account Orca has active.
 
 ## Install
 
@@ -68,17 +67,19 @@ orca plugin dev unload .
 
 This is a `trusted-worker` plugin: it runs its own Node.js process with your user account's access to the machine, which is why Orca asks for explicit approval. In practice it does only two things:
 
-1. Reads which Claude account Orca has active (a read-only `sqlite3` query on Orca's `profile-state.db`), then runs `security find-generic-password -s "Claude Code-credentials[-<hash>]" -w` to read that account's Claude Code OAuth token from the Keychain.
+1. Asks Orca which Claude account is active (`orca account list`), then runs `security find-generic-password -s "Claude Code-credentials[-<hash>]" -w` to read that account's Claude Code OAuth token from the Keychain.
 2. Sends that token to `https://api.anthropic.com/api/oauth/usage` to read your current usage windows.
 
 The token is held in memory for the request and is never written to disk, logged, or sent anywhere else. There is no telemetry. The whole plugin is one file, [`src/worker.ts`](src/worker.ts), so you can read it before approving.
 
 ## How it works
 
-1. On start, and every 5 minutes after, the worker finds Orca's active Claude account, reads its token and calls the usage endpoint. Orca stores each managed account's login under a Keychain entry named `Claude Code-credentials-<first 8 hex chars of sha256(config dir)>`.
+1. On start, and every 5 minutes after, the worker asks Orca for its active Claude account, reads its token and calls the usage endpoint. Orca stores each managed account's login under a Keychain entry named `Claude Code-credentials-<first 8 hex chars of sha256(config dir)>`.
 2. The response contains `five_hour` and `seven_day` windows, each with a `utilization` percentage and a `resets_at` timestamp (plus `seven_day_opus` and `seven_day_sonnet` for some plans).
 3. The worker draws an 8-segment bar for each window and pushes it to the status bar with `statusBar.update`.
 4. If a request fails, the items turn orange and the tooltip says why. The plugin retries with a growing delay.
+
+The bundled `orca` CLI is expected at `/Applications/Orca.app/Contents/Resources/bin/orca`; set `ORCA_CLI` to point elsewhere.
 
 Orca limits status bar text to 64 characters and gives each item a single color. That is why the two windows are separate items rather than one combined string.
 
